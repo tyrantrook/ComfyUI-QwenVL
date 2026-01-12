@@ -110,55 +110,118 @@ def _model_name_to_filename_candidates(model_name: str) -> set[str]:
     return candidates
 
 
+def _generate_display_name(rel_path: Path, filename: str) -> str:
+    name = filename
+    labels = []
+    lower_name = name.lower()
+    if "ablit" in lower_name or "abliterated" in lower_name:
+        labels.append("Abliterated")
+    if any(q in lower_name for q in ["q2_", "q3_", "q4_", "q5_", "q6_", "q8_"]):
+        labels.append("Quantized")
+    if "third" in lower_name or "party" in lower_name or "3rd" in lower_name:
+        labels.append("3rd Party")
+    if labels:
+        name = f"[{', '.join(labels)}] {name}"
+    # Include relative path if in subdir
+    if rel_path.parent != Path("."):
+        name = f"{rel_path.parent} / {name}"
+    return name
+
+
+def _find_mmproj(dir_path: Path, model_file: str) -> str | None:
+    # Look for mmproj files in the same directory
+    mmproj_candidates = list(dir_path.glob("mmproj*.gguf"))
+    if mmproj_candidates:
+        # Prefer one that matches the model name if possible
+        model_base = Path(model_file).stem
+        for cand in mmproj_candidates:
+            if model_base in cand.name:
+                return cand.name
+        return mmproj_candidates[0].name
+    return None
+
+
 def _load_gguf_vl_catalog():
-    if not GGUF_CONFIG_PATH.exists():
-        return {"base_dir": "llm/GGUF", "models": {}}
+    models = {}
+
+    # Scan local GGUF directories
     try:
-        with open(GGUF_CONFIG_PATH, "r", encoding="utf-8") as fh:
-            data = json.load(fh) or {}
+        llm_paths = folder_paths.get_folder_paths("LLM")
+        for base_path in llm_paths:
+            gguf_dir = base_path / "GGUF"
+            if gguf_dir.exists():
+                for root, dirs, files in os.walk(gguf_dir):
+                    root_path = Path(root)
+                    rel_root = root_path.relative_to(gguf_dir)
+                    for file in files:
+                        if file.endswith('.gguf') and not file.startswith('mmproj'):
+                            full_path = root_path / file
+                            rel_path = full_path.relative_to(gguf_dir)
+                            display_name = _generate_display_name(rel_root, file)
+                            mmproj_filename = _find_mmproj(root_path, file)
+                            models[display_name] = {
+                                "filename": str(rel_path),
+                                "mmproj_filename": mmproj_filename,
+                                "context_length": 8192,
+                                "image_max_tokens": 4096,
+                                "n_batch": 512,
+                                "gpu_layers": -1,
+                                "top_k": 0,
+                                "pool_size": 4194304,
+                                "author": None,
+                                "repo_dirname": str(rel_root),
+                                "repo_id": None,
+                                "alt_repo_ids": [],
+                            }
     except Exception as exc:
-        print(f"[QwenVL] gguf_models.json load failed: {exc}")
-        return {"base_dir": "llm/GGUF", "models": {}}
+        print(f"[QwenVL] Error scanning local GGUF models: {exc}")
 
-    base_dir = data.get("base_dir") or "llm/GGUF"
+    # Fallback to JSON config if no models found or for additional entries
+    if not models or not GGUF_CONFIG_PATH.exists():
+        try:
+            with open(GGUF_CONFIG_PATH, "r", encoding="utf-8") as fh:
+                data = json.load(fh) or {}
+        except Exception as exc:
+            print(f"[QwenVL] gguf_models.json load failed: {exc}")
+            data = {}
 
-    flattened: dict[str, dict] = {}
+        base_dir = data.get("base_dir") or "llm/GGUF"
 
-    repos = data.get("qwenVL_model") or data.get("vl_repos") or data.get("repos") or {}
-    seen_display_names: set[str] = set()
-    for repo_key, repo in repos.items():
-        if not isinstance(repo, dict):
-            continue
-        author = repo.get("author") or repo.get("publisher")
-        repo_name = repo.get("repo_name") or repo.get("repo_name_override") or repo_key
-        repo_id = repo.get("repo_id") or (f"{author}/{repo_name}" if author and repo_name else None)
-        alt_repo_ids = repo.get("alt_repo_ids") or []
+        repos = data.get("qwenVL_model") or data.get("vl_repos") or data.get("repos") or {}
+        seen_display_names: set[str] = set()
+        for repo_key, repo in repos.items():
+            if not isinstance(repo, dict):
+                continue
+            author = repo.get("author") or repo.get("publisher")
+            repo_name = repo.get("repo_name") or repo.get("repo_name_override") or repo_key
+            repo_id = repo.get("repo_id") or (f"{author}/{repo_name}" if author and repo_name else None)
+            alt_repo_ids = repo.get("alt_repo_ids") or []
 
-        defaults = repo.get("defaults") or {}
-        mmproj_file = repo.get("mmproj_file")
-        model_files = repo.get("model_files") or []
+            defaults = repo.get("defaults") or {}
+            mmproj_file = repo.get("mmproj_file")
+            model_files = repo.get("model_files") or []
 
-        for model_file in model_files:
-            display = Path(model_file).name
-            if display in seen_display_names:
-                display = f"{display} ({repo_key})"
-            seen_display_names.add(display)
-            flattened[display] = {
-                **defaults,
-                "author": author,
-                "repo_dirname": repo_name,
-                "repo_id": repo_id,
-                "alt_repo_ids": alt_repo_ids,
-                "filename": model_file,
-                "mmproj_filename": mmproj_file,
-            }
+            for model_file in model_files:
+                display = Path(model_file).name
+                if display in seen_display_names:
+                    display = f"{display} ({repo_key})"
+                seen_display_names.add(display)
+                models[display] = {
+                    **defaults,
+                    "author": author,
+                    "repo_dirname": repo_name,
+                    "repo_id": repo_id,
+                    "alt_repo_ids": alt_repo_ids,
+                    "filename": model_file,
+                    "mmproj_filename": mmproj_file,
+                }
 
-    legacy_models = data.get("models") or {}
-    for name, entry in legacy_models.items():
-        if isinstance(entry, dict):
-            flattened[name] = entry
+        legacy_models = data.get("models") or {}
+        for name, entry in legacy_models.items():
+            if isinstance(entry, dict):
+                models[name] = entry
 
-    return {"base_dir": base_dir, "models": flattened}
+    return {"base_dir": "llm/GGUF", "models": models}
 
 
 GGUF_VL_CATALOG = _load_gguf_vl_catalog()
