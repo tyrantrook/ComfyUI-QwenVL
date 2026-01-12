@@ -24,7 +24,7 @@ import torch
 from huggingface_hub import hf_hub_download
 from PIL import Image
 
-import folder_paths
+import folder_paths  # type: ignore
 from AILab_OutputCleaner import OutputCleanConfig, clean_model_output
 
 NODE_DIR = Path(__file__).parent
@@ -380,7 +380,7 @@ class QwenVLGGUFBase:
 
     def _load_backend(self):
         try:
-            from llama_cpp import Llama  # noqa: F401
+            from llama_cpp import Llama  # type: ignore  # noqa: F401
         except Exception as exc:
             raise RuntimeError(
                 "[QwenVL] llama_cpp is not available. Install the GGUF vision dependency first. See docs/GGUF_MANUAL_INSTALL.md"
@@ -422,7 +422,7 @@ class QwenVLGGUFBase:
         if mmproj_path is not None and not mmproj_path.exists():
             if not repo_ids:
                 raise FileNotFoundError(f"[QwenVL] mmproj not found locally and no repo_id provided: {mmproj_path}")
-            _download_single_file(repo_ids, resolved.mmproj_filename, mmproj_path)
+            _download_single_file(repo_ids, resolved.mmproj_filename, mmproj_path)  # type: ignore
 
         device_kind = _pick_device(device)
 
@@ -455,18 +455,18 @@ class QwenVLGGUFBase:
 
         self.clear()
 
-        from llama_cpp import Llama
+        from llama_cpp import Llama  # type: ignore
 
         self.chat_handler = None
         if has_mmproj:
             handler_cls = None
             try:
-                from llama_cpp.llama_chat_format import Qwen3VLChatHandler
+                from llama_cpp.llama_chat_format import Qwen3VLChatHandler  # type: ignore
 
                 handler_cls = Qwen3VLChatHandler
             except ImportError:
                 try:
-                    from llama_cpp.llama_chat_format import Qwen25VLChatHandler
+                    from llama_cpp.llama_chat_format import Qwen25VLChatHandler  # type: ignore
 
                     handler_cls = Qwen25VLChatHandler
                 except ImportError:
@@ -531,7 +531,7 @@ class QwenVLGGUFBase:
             for img in images_b64:
                 if not img:
                     continue
-                content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img}"}})
+                content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img}"}})  # type: ignore
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": content},
@@ -543,7 +543,7 @@ class QwenVLGGUFBase:
             ]
 
         start = time.perf_counter()
-        result = self.llm.create_chat_completion(
+        result = self.llm.create_chat_completion(  # type: ignore
             messages=messages,
             max_tokens=int(max_tokens),
             temperature=float(temperature),
