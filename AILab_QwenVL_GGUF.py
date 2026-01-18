@@ -25,6 +25,7 @@ from huggingface_hub import hf_hub_download
 from PIL import Image
 
 import folder_paths  # type: ignore
+import yaml
 from AILab_OutputCleaner import OutputCleanConfig, clean_model_output
 
 NODE_DIR = Path(__file__).parent
@@ -74,6 +75,7 @@ class GGUFVLResolved:
     repo_dirname: str
     model_filename: str
     mmproj_filename: str | None
+    base_path: str
     context_length: int
     image_max_tokens: int
     n_batch: int
@@ -144,19 +146,19 @@ def _find_mmproj(dir_path: Path, model_file: str) -> str | None:
 def _load_gguf_vl_catalog():
     models = {}
 
-    # Scan local GGUF directories
+    # Scan local LLM directories for GGUF files
     try:
         llm_paths = folder_paths.get_folder_paths("LLM")
         for base_path in llm_paths:
-            gguf_dir = base_path / "GGUF"
-            if gguf_dir.exists():
-                for root, dirs, files in os.walk(gguf_dir):
+            base_path = Path(base_path)
+            if base_path.exists():
+                for root, dirs, files in os.walk(base_path):
                     root_path = Path(root)
-                    rel_root = root_path.relative_to(gguf_dir)
+                    rel_root = root_path.relative_to(base_path)
                     for file in files:
                         if file.endswith('.gguf') and not file.startswith('mmproj'):
                             full_path = root_path / file
-                            rel_path = full_path.relative_to(gguf_dir)
+                            rel_path = full_path.relative_to(base_path)
                             display_name = _generate_display_name(rel_root, file)
                             mmproj_filename = _find_mmproj(root_path, file)
                             models[display_name] = {
@@ -172,9 +174,45 @@ def _load_gguf_vl_catalog():
                                 "repo_dirname": str(rel_root),
                                 "repo_id": None,
                                 "alt_repo_ids": [],
+                                "base_path": str(base_path),
                             }
     except Exception as exc:
-        print(f"[QwenVL] Error scanning local GGUF models: {exc}")
+        print(f"[QwenVL] Error scanning local LLM models: {exc}")
+
+    # Scan GGUF directories
+    try:
+        gguf_paths = folder_paths.get_folder_paths("GGUF")
+        if not gguf_paths:
+            gguf_paths = [Path(folder_paths.models_dir) / "GGUF"]
+        for base_path in gguf_paths:
+            base_path = Path(base_path)
+            if base_path.exists():
+                for root, dirs, files in os.walk(base_path):
+                    root_path = Path(root)
+                    rel_root = root_path.relative_to(base_path)
+                    for file in files:
+                        if file.endswith('.gguf') and not file.startswith('mmproj'):
+                            full_path = root_path / file
+                            rel_path = full_path.relative_to(base_path)
+                            display_name = _generate_display_name(rel_root, file)
+                            mmproj_filename = _find_mmproj(root_path, file)
+                            models[display_name] = {
+                                "filename": str(rel_path),
+                                "mmproj_filename": mmproj_filename,
+                                "context_length": 8192,
+                                "image_max_tokens": 4096,
+                                "n_batch": 512,
+                                "gpu_layers": -1,
+                                "top_k": 0,
+                                "pool_size": 4194304,
+                                "author": None,
+                                "repo_dirname": str(rel_root),
+                                "repo_id": None,
+                                "alt_repo_ids": [],
+                                "base_path": str(base_path),
+                            }
+    except Exception as exc:
+        print(f"[QwenVL] Error scanning GGUF models: {exc}")
 
     # Fallback to JSON config if no models found or for additional entries
     if not models or not GGUF_CONFIG_PATH.exists():
@@ -185,7 +223,7 @@ def _load_gguf_vl_catalog():
             print(f"[QwenVL] gguf_models.json load failed: {exc}")
             data = {}
 
-        base_dir = data.get("base_dir") or "llm/GGUF"
+        base_dir = data.get("base_dir") or "GGUF"
 
         repos = data.get("qwenVL_model") or data.get("vl_repos") or data.get("repos") or {}
         seen_display_names: set[str] = set()
@@ -221,7 +259,19 @@ def _load_gguf_vl_catalog():
             if isinstance(entry, dict):
                 models[name] = entry
 
-    return {"base_dir": "llm/GGUF", "models": models}
+    extra_config_path = Path(folder_paths.models_dir).parent / "extra_model_config.yaml"
+    if extra_config_path.exists():
+        try:
+            with open(extra_config_path, "r", encoding="utf-8") as fh:
+                extra_data = yaml.safe_load(fh) or {}
+            extra_models = extra_data.get("models") or {}
+            if isinstance(extra_models, dict):
+                models.update(extra_models)
+                print(f"[QwenVL] Loaded {len(extra_models)} extra GGUF models from extra_model_config.yaml")
+        except Exception as exc:
+            print(f"[QwenVL] Extra config load failed: {exc}")
+
+    return {"base_dir": "GGUF", "models": models}
 
 
 GGUF_VL_CATALOG = _load_gguf_vl_catalog()
@@ -336,6 +386,7 @@ def _resolve_model_entry(model_name: str) -> GGUFVLResolved:
 
     model_filename = entry.get("filename")
     mmproj_filename = entry.get("mmproj_filename")
+    base_path = entry.get("base_path", str(Path(folder_paths.models_dir) / "GGUF"))
 
     if not model_filename:
         raise ValueError(f"[QwenVL] gguf_vl_models.json entry missing 'filename' for: {model_name}")
@@ -355,6 +406,7 @@ def _resolve_model_entry(model_name: str) -> GGUFVLResolved:
         repo_dirname=_safe_dirname(str(repo_dirname)),
         model_filename=str(model_filename),
         mmproj_filename=str(mmproj_filename) if mmproj_filename else None,
+        base_path=str(base_path),
         context_length=_int("context_length", 8192),
         image_max_tokens=_int("image_max_tokens", 4096),
         n_batch=_int("n_batch", 512),
@@ -400,29 +452,19 @@ class QwenVLGGUFBase:
         self._load_backend()
 
         resolved = _resolve_model_entry(model_name)
-        base_dir = _resolve_base_dir(GGUF_VL_CATALOG.get("base_dir") or "llm/GGUF")
+        base_path = Path(resolved.base_path)
 
-        author_dir = _safe_dirname(resolved.author or "")
-        repo_dir = _safe_dirname(resolved.repo_dirname)
-        target_dir = base_dir / author_dir / repo_dir
-
-        model_path = target_dir / Path(resolved.model_filename).name
-        mmproj_path = target_dir / Path(resolved.mmproj_filename).name if resolved.mmproj_filename else None
-
-        repo_ids: list[str] = []
-        if resolved.repo_id:
-            repo_ids.append(resolved.repo_id)
-        repo_ids.extend(resolved.alt_repo_ids)
+        model_path = base_path / resolved.model_filename
+        mmproj_path = base_path / resolved.mmproj_filename if resolved.mmproj_filename else None
 
         if not model_path.exists():
-            if not repo_ids:
-                raise FileNotFoundError(f"[QwenVL] GGUF model not found locally and no repo_id provided: {model_path}")
-            _download_single_file(repo_ids, resolved.model_filename, model_path)
+            raise FileNotFoundError(f"[QwenVL] GGUF model not found: {model_path}")
 
         if mmproj_path is not None and not mmproj_path.exists():
-            if not repo_ids:
-                raise FileNotFoundError(f"[QwenVL] mmproj not found locally and no repo_id provided: {mmproj_path}")
-            _download_single_file(repo_ids, resolved.mmproj_filename, mmproj_path)  # type: ignore
+            raise FileNotFoundError(f"[QwenVL] mmproj not found: {mmproj_path}")
+
+        rel_path = model_path.relative_to(folder_paths.models_dir)
+        print(f"[QwenVL] Using GGUF model from: {rel_path}")
 
         device_kind = _pick_device(device)
 

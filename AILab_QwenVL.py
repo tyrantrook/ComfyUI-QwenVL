@@ -27,6 +27,7 @@ from huggingface_hub import snapshot_download
 from transformers import AutoModelForVision2Seq, AutoProcessor, AutoTokenizer, BitsAndBytesConfig
 
 import folder_paths
+import yaml
 
 NODE_DIR = Path(__file__).parent
 CONFIG_PATH = NODE_DIR / "hf_models.json"
@@ -128,6 +129,27 @@ def load_model_configs():
                 print(f"[QwenVL] Loaded {len(legacy)} custom legacy models")
         except Exception as exc:
             print(f"[QwenVL] custom_models.json skipped: {exc}")
+    extra_config_path = Path(folder_paths.models_dir).parent / "extra_model_config.yaml"
+    if extra_config_path.exists():
+        try:
+            with open(extra_config_path, "r", encoding="utf-8") as fh:
+                extra_data = yaml.safe_load(fh) or {}
+            extra_vl = extra_data.get("hf_vl_models") or {}
+            extra_text = extra_data.get("hf_text_models") or {}
+            if isinstance(extra_vl, dict) and extra_vl:
+                HF_VL_MODELS.update(extra_vl)
+                print(f"[QwenVL] Loaded {len(extra_vl)} extra VL models from extra_model_config.yaml")
+            if isinstance(extra_text, dict) and extra_text:
+                HF_TEXT_MODELS.update(extra_text)
+                print(f"[QwenVL] Loaded {len(extra_text)} extra text models from extra_model_config.yaml")
+            extra_system = extra_data.get("_system_prompts", {})
+            if isinstance(extra_system, dict):
+                SYSTEM_PROMPTS.update(extra_system)
+            extra_preset = extra_data.get("_preset_prompts")
+            if isinstance(extra_preset, list) and extra_preset:
+                PRESET_PROMPTS = extra_preset
+        except Exception as exc:
+            print(f"[QwenVL] Extra config load failed: {exc}")
     HF_ALL_MODELS = dict(HF_VL_MODELS)
     HF_ALL_MODELS.update(HF_TEXT_MODELS)
 
@@ -247,29 +269,20 @@ def ensure_model(model_name):
         raise ValueError(f"Model '{model_name}' not in config")
     repo_id = info["repo_id"]
 
-    # Use ComfyUI's multi-path system if available
-    llm_paths = folder_paths.get_folder_paths("LLM") if "LLM" in folder_paths.folder_names_and_paths else []
-    if llm_paths:
-        models_dir = Path(llm_paths[0]) / "Qwen-VL"
-    else:
-        # Fallback to default behavior
-        models_dir = Path(folder_paths.models_dir) / "LLM" / "Qwen-VL"
+    # Use ComfyUI's multi-path system
+    llm_paths = folder_paths.get_folder_paths("LLM")
+    if not llm_paths:
+        raise ValueError("No LLM paths configured in extra_model_paths.yaml")
 
-    models_dir.mkdir(parents=True, exist_ok=True)
-    target = models_dir / repo_id.split("/")[-1]
-
-    # ✅ If already downloaded (has weights), use local without calling snapshot_download
-    if target.exists() and target.is_dir():
-        if any(target.glob("*.safetensors")) or any(target.glob("*.bin")):
+    repo_name = repo_id.split("/")[-1]
+    for base_path in llm_paths:
+        target = Path(base_path) / repo_name
+        if target.exists() and target.is_dir() and (any(target.glob("*.safetensors")) or any(target.glob("*.bin"))):
+            rel_path = target.relative_to(folder_paths.models_dir)
+            print(f"[QwenVL] Using model from: {rel_path}")
             return str(target)
 
-    snapshot_download(
-        repo_id=repo_id,
-        local_dir=str(target),
-        local_dir_use_symlinks=False,
-        ignore_patterns=["*.md", ".git*"],
-    )
-    return str(target)
+    raise ValueError(f"Model '{model_name}' not found in LLM paths")
 
 def enforce_memory(model_name, quantization, device_info):
     info = HF_ALL_MODELS.get(model_name, {})
