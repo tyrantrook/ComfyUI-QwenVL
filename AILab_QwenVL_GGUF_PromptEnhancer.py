@@ -90,7 +90,7 @@ class AILab_QwenVL_GGUF_PromptEnhancer:
     @staticmethod
     def load_gguf_models():
         fallback = {
-            "base_dir": "llm/GGUF",
+            "base_dir": "GGUF",
             "models": {},
         }
         if not GGUF_CONFIG_PATH.exists():
@@ -103,6 +103,7 @@ class AILab_QwenVL_GGUF_PromptEnhancer:
             return fallback
 
         base_dir = data.get("base_dir") or fallback["base_dir"]
+        resolved_base_dir = _resolve_base_dir(base_dir)
 
         models: dict[str, dict] = {}
 
@@ -132,6 +133,9 @@ class AILab_QwenVL_GGUF_PromptEnhancer:
                     if display in seen_display_names:
                         display = f"{display} ({repo_key})"
                     seen_display_names.add(display)
+                    rel_path = Path(repo_name) / model_file
+                    if author and author != "unknown":
+                        rel_path = Path(author) / rel_path
                     entry = dict(defaults)
                     entry.update(
                         {
@@ -139,7 +143,8 @@ class AILab_QwenVL_GGUF_PromptEnhancer:
                             "repo_dirname": repo_name,
                             "repo_id": repo_id,
                             "alt_repo_ids": alt_repo_ids,
-                            "filename": model_file,
+                            "filename": str(rel_path),
+                            "base_path": str(resolved_base_dir),
                         }
                     )
                     models[display] = entry
@@ -187,7 +192,13 @@ class AILab_QwenVL_GGUF_PromptEnhancer:
                     entry = candidate
                     break
 
-        base_dir = _resolve_base_dir(self.gguf_models.get("base_dir") or "llm/GGUF")
+        base_path = entry.get("base_path")
+        filename = entry.get("filename")
+        if base_path and filename:
+            return Path(base_path) / filename
+
+        # Fallback to old logic
+        base_dir = _resolve_base_dir(self.gguf_models.get("base_dir") or "GGUF")
 
         path = entry.get("path")
         if path:

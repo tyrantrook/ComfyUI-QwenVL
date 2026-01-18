@@ -153,6 +153,26 @@ def load_model_configs():
     HF_ALL_MODELS = dict(HF_VL_MODELS)
     HF_ALL_MODELS.update(HF_TEXT_MODELS)
 
+    # Scan local LLM directories for safetensors/bin models
+    try:
+        llm_paths = folder_paths.get_folder_paths("LLM")
+        for base_dir in llm_paths:
+            base_dir = Path(base_dir)
+            if base_dir.exists():
+                for root, dirs, files in os.walk(base_dir):
+                    root_path = Path(root)
+                    rel_path = root_path.relative_to(base_dir)
+                    if any(f.endswith('.safetensors') for f in files) or any(f.endswith('.bin') for f in files):
+                        display_name = str(rel_path)
+                        if display_name not in HF_ALL_MODELS:
+                            HF_ALL_MODELS[display_name] = {
+                                "repo_id": None,
+                                "filename": str(rel_path),
+                                "base_path": str(base_dir),
+                            }
+    except Exception as exc:
+        print(f"[QwenVL] Error scanning local models: {exc}")
+
 
 if not HF_ALL_MODELS:
     load_model_configs()
@@ -267,16 +287,24 @@ def ensure_model(model_name):
     info = HF_ALL_MODELS.get(model_name)
     if not info:
         raise ValueError(f"Model '{model_name}' not in config")
-    repo_id = info["repo_id"]
+    repo_id = info.get("repo_id")
+    base_path = info.get("base_path")
+    filename = info.get("filename")
+    if base_path and filename:
+        target = Path(base_path) / filename
+        if target.exists():
+            rel_path = target.relative_to(folder_paths.models_dir)
+            print(f"[QwenVL] Using model from: {rel_path}")
+            return str(target)
 
-    # Use ComfyUI's multi-path system
+    # Fallback to old logic for JSON models
     llm_paths = folder_paths.get_folder_paths("LLM")
     if not llm_paths:
         raise ValueError("No LLM paths configured in extra_model_paths.yaml")
 
-    repo_name = repo_id.split("/")[-1]
-    for base_path in llm_paths:
-        target = Path(base_path) / repo_name
+    repo_name = repo_id.split("/")[-1] if repo_id else model_name
+    for base_dir in llm_paths:
+        target = Path(base_dir) / repo_name
         if target.exists() and target.is_dir() and (any(target.glob("*.safetensors")) or any(target.glob("*.bin"))):
             rel_path = target.relative_to(folder_paths.models_dir)
             print(f"[QwenVL] Using model from: {rel_path}")
